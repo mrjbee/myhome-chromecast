@@ -182,6 +182,8 @@ curl -X POST \
 
 The YouTube integration reuses an existing YouTube Cast session when possible. Otherwise it launches receiver `233637DE`, obtains a `screenId` through `urn:x-cast:com.google.youtube.mdx`, binds a YouTube Lounge session, and sends `setPlaylist(videoId)`.
 
+If an existing YouTube receiver session does not return a `screenId`, the service treats it as unresponsive, stops that receiver session, launches a fresh one, and retries the MDX handshake automatically.
+
 YouTube Lounge is an unofficial protocol and may change without notice.
 
 ## Logging

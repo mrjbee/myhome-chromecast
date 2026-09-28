@@ -67,7 +67,7 @@ func (m *Manager) Connect(ctx context.Context, id string) (Connected, error) {
 		"address", address,
 		"port", device.Entry.Port,
 	)
-	client, _, err := Dial(ctx, address, device.Entry.Port, m.castTimeout)
+	client, _, err := Dial(ctx, address, device.Entry.Port, m.castTimeout, m.logger)
 	if err != nil {
 		m.logger.Warn("failed to connect to Cast device",
 			"uuid", device.Entry.UUID,

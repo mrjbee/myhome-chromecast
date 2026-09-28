@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,6 +23,8 @@ const (
 	youtubeNS          = "urn:x-cast:com.google.youtube.mdx"
 	youtubeReceiverID  = "233637DE"
 	youtubeLaunchDelay = 20 * time.Second
+	youtubeStopDelay   = 10 * time.Second
+	youtubeMDXRetry    = time.Second
 )
 
 type mdxRequest struct {
@@ -29,6 +32,11 @@ type mdxRequest struct {
 }
 
 func (*mdxRequest) SetRequestId(int) {}
+
+type stopAppPayload struct {
+	cast.PayloadHeader
+	SessionID string `json:"sessionId"`
+}
 
 type setVolumePayload struct {
 	cast.PayloadHeader
@@ -45,6 +53,7 @@ type screenStatus struct {
 type Client struct {
 	conn    *cast.Connection
 	timeout time.Duration
+	logger  *slog.Logger
 	nextID  atomic.Int64
 
 	waitMu  sync.Mutex
@@ -54,10 +63,11 @@ type Client struct {
 	close   sync.Once
 }
 
-func Dial(ctx context.Context, address string, port int, timeout time.Duration) (*Client, cast.ReceiverStatusResponse, error) {
+func Dial(ctx context.Context, address string, port int, timeout time.Duration, logger *slog.Logger) (*Client, cast.ReceiverStatusResponse, error) {
 	client := &Client{
 		conn:    cast.NewConnection(),
 		timeout: timeout,
+		logger:  logger,
 		waiters: make(map[int]chan *pb.CastMessage),
 		done:    make(chan struct{}),
 		screens: make(chan screenStatus, 8),
@@ -237,32 +247,36 @@ func (c *Client) YouTubeScreenID(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	transportID := youtubeTransport(status)
-	if transportID == "" {
-		launchCtx, cancel := context.WithTimeout(ctx, youtubeLaunchDelay)
-		defer cancel()
-		if err := c.send(&cast.LaunchRequest{
-			PayloadHeader: cast.PayloadHeader{Type: "LAUNCH"},
-			AppId:         youtubeReceiverID,
-		}, defaultReceiver, receiverNS); err != nil {
-			return "", fmt.Errorf("launch YouTube receiver: %w", err)
+	if app, ok := youtubeApplication(status); ok {
+		c.logger.Info("reusing existing YouTube receiver session",
+			"sessionId", app.SessionId,
+			"transportId", app.TransportId,
+		)
+		screenID, screenErr := c.requestYouTubeScreenID(ctx, app.TransportId)
+		if screenErr == nil {
+			return screenID, nil
 		}
-		for transportID == "" {
-			status, err = c.ReceiverStatus(launchCtx)
-			if err == nil {
-				transportID = youtubeTransport(status)
-			}
-			if transportID != "" {
-				break
-			}
-			select {
-			case <-launchCtx.Done():
-				return "", fmt.Errorf("wait for YouTube receiver: %w", launchCtx.Err())
-			case <-time.After(500 * time.Millisecond):
-			}
+		if !errors.Is(screenErr, context.DeadlineExceeded) || ctx.Err() != nil {
+			return "", screenErr
+		}
+		c.logger.Warn("existing YouTube receiver session did not return screen ID; restarting it",
+			"sessionId", app.SessionId,
+			"transportId", app.TransportId,
+			"error", screenErr,
+		)
+		if err := c.stopYouTubeReceiver(ctx, app); err != nil {
+			return "", fmt.Errorf("recover YouTube receiver: %w", err)
 		}
 	}
 
+	app, err := c.launchYouTubeReceiver(ctx)
+	if err != nil {
+		return "", err
+	}
+	return c.requestYouTubeScreenID(ctx, app.TransportId)
+}
+
+func (c *Client) requestYouTubeScreenID(ctx context.Context, transportID string) (string, error) {
 	if err := c.send(&cast.PayloadHeader{Type: "CONNECT"}, transportID, connectionNS); err != nil {
 		return "", fmt.Errorf("connect to YouTube transport: %w", err)
 	}
@@ -275,16 +289,33 @@ func (c *Client) YouTubeScreenID(ctx context.Context) (string, error) {
 	}
 
 drained:
-	if err := c.send(&mdxRequest{Type: "getMdxSessionStatus"}, transportID, youtubeNS); err != nil {
-		return "", fmt.Errorf("request YouTube MDX status: %w", err)
-	}
 	waitCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
+	retry := time.NewTicker(youtubeMDXRetry)
+	defer retry.Stop()
+
+	requestStatus := func() error {
+		if err := c.send(&mdxRequest{Type: "getMdxSessionStatus"}, transportID, youtubeNS); err != nil {
+			return fmt.Errorf("request YouTube MDX status: %w", err)
+		}
+		return nil
+	}
+	if err := requestStatus(); err != nil {
+		return "", err
+	}
 	for {
 		select {
 		case screen := <-c.screens:
-			if screen.transportID == transportID {
-				return screen.screenID, nil
+			if screen.transportID != transportID {
+				c.logger.Warn("received YouTube screen ID from unexpected transport",
+					"expectedTransportId", transportID,
+					"sourceTransportId", screen.transportID,
+				)
+			}
+			return screen.screenID, nil
+		case <-retry.C:
+			if err := requestStatus(); err != nil {
+				return "", err
 			}
 		case <-waitCtx.Done():
 			return "", fmt.Errorf("wait for YouTube screen ID: %w", waitCtx.Err())
@@ -294,13 +325,72 @@ drained:
 	}
 }
 
-func youtubeTransport(status cast.ReceiverStatusResponse) string {
-	for _, app := range status.Status.Applications {
-		if app.AppId == youtubeReceiverID && app.TransportId != "" {
-			return app.TransportId
+func (c *Client) stopYouTubeReceiver(ctx context.Context, app cast.Application) error {
+	if app.SessionId == "" {
+		return errors.New("running YouTube receiver has no session ID")
+	}
+	stopCtx, cancel := context.WithTimeout(ctx, youtubeStopDelay)
+	defer cancel()
+	if err := c.send(&stopAppPayload{
+		PayloadHeader: cast.PayloadHeader{Type: "STOP"},
+		SessionID:     app.SessionId,
+	}, defaultReceiver, receiverNS); err != nil {
+		return fmt.Errorf("stop YouTube receiver: %w", err)
+	}
+
+	for {
+		status, err := c.ReceiverStatus(stopCtx)
+		if err == nil {
+			if _, running := youtubeApplication(status); !running {
+				c.logger.Info("stopped unresponsive YouTube receiver session", "sessionId", app.SessionId)
+				return nil
+			}
+		}
+		select {
+		case <-stopCtx.Done():
+			return fmt.Errorf("wait for YouTube receiver to stop: %w", stopCtx.Err())
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
-	return ""
+}
+
+func (c *Client) launchYouTubeReceiver(ctx context.Context) (cast.Application, error) {
+	launchCtx, cancel := context.WithTimeout(ctx, youtubeLaunchDelay)
+	defer cancel()
+	c.logger.Info("launching YouTube receiver", "appId", youtubeReceiverID)
+	if err := c.send(&cast.LaunchRequest{
+		PayloadHeader: cast.PayloadHeader{Type: "LAUNCH"},
+		AppId:         youtubeReceiverID,
+	}, defaultReceiver, receiverNS); err != nil {
+		return cast.Application{}, fmt.Errorf("launch YouTube receiver: %w", err)
+	}
+
+	for {
+		status, err := c.ReceiverStatus(launchCtx)
+		if err == nil {
+			if app, running := youtubeApplication(status); running {
+				c.logger.Info("YouTube receiver launched",
+					"sessionId", app.SessionId,
+					"transportId", app.TransportId,
+				)
+				return app, nil
+			}
+		}
+		select {
+		case <-launchCtx.Done():
+			return cast.Application{}, fmt.Errorf("wait for YouTube receiver: %w", launchCtx.Err())
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+func youtubeApplication(status cast.ReceiverStatusResponse) (cast.Application, bool) {
+	for _, app := range status.Status.Applications {
+		if app.AppId == youtubeReceiverID && app.TransportId != "" {
+			return app, true
+		}
+	}
+	return cast.Application{}, false
 }
 
 func activeApplication(status cast.ReceiverStatusResponse) (cast.Application, error) {
