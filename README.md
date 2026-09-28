@@ -31,6 +31,73 @@ make build-arm64
 
 The resulting binaries are written to `bin/`.
 
+## Docker deployment on Raspberry Pi 5
+
+The Docker image is built for `linux/arm64` by default. Build it locally without pushing:
+
+```sh
+make docker-build
+```
+
+Build, load, and push it to the Raspberry Pi registry through the local Docker daemon:
+
+```sh
+make docker-push
+```
+
+The default image reference is:
+
+```text
+raspberrypi.lan:5000/org.monroe.team/myhome-chromecast:latest
+```
+
+The registry, image name, tag, and platform can be overridden when needed:
+
+```sh
+make docker-push \
+  REGISTRY=raspberrypi.lan:5000 \
+  IMAGE_NAME=org.monroe.team/myhome-chromecast \
+  TAG=latest \
+  PLATFORM=linux/arm64
+```
+
+Pull and run the service on Raspberry Pi OS:
+
+```sh
+docker pull raspberrypi.lan:5000/org.monroe.team/myhome-chromecast:latest
+
+docker run -d \
+  --name myhome-chromecast \
+  --restart unless-stopped \
+  --network host \
+  -e HTTP_ADDR=:8080 \
+  -e DEVICE_TTL=3h \
+  raspberrypi.lan:5000/org.monroe.team/myhome-chromecast:latest
+```
+
+The equivalent minimal Docker Compose service is:
+
+```yaml
+services:
+  myhome-chromecast:
+    image: raspberrypi.lan:5000/org.monroe.team/myhome-chromecast:latest
+    container_name: myhome-chromecast
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      HTTP_ADDR: ":8080"
+```
+
+Save it as `compose.yaml` on the Raspberry Pi and start the service with:
+
+```sh
+docker compose up -d
+```
+
+`HTTP_ADDR` is the only environment variable set in this minimal example. It can be omitted as well because `:8080` is the application default. No `ports` section is needed when host networking is enabled.
+
+Host networking is required for reliable multicast DNS discovery on Linux. If the registry uses plain HTTP, configure `raspberrypi.lan:5000` as an insecure registry in the Docker daemon on both the build machine and the Raspberry Pi.
+
 ## Configuration
 
 Configuration is provided through environment variables:
