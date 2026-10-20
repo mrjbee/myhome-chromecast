@@ -22,7 +22,7 @@ func Load() (Config, error) {
 		DeviceTTL:          3 * time.Hour,
 		CastTimeout:        5 * time.Second,
 		YouTubeTimeout:     15 * time.Second,
-		YouTubeReceiverID:  os.Getenv("YOUTUBE_RECEIVER_APP_ID"),
+		YouTubeReceiverID:  envOrDefault("YOUTUBE_RECEIVER_APP_ID", "233637DE"),
 	}
 
 	var err error

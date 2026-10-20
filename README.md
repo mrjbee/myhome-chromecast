@@ -109,7 +109,7 @@ Configuration is provided through environment variables:
 | `DEVICE_TTL` | `3h` | Time a device remains available after its last mDNS announcement |
 | `CAST_TIMEOUT` | `5s` | Timeout for a request to a Cast device |
 | `YOUTUBE_TIMEOUT` | `15s` | Timeout for a YouTube Lounge HTTP request |
-| `YOUTUBE_RECEIVER_APP_ID` | empty | Override the YouTube receiver app ID; empty automatically uses the native Android TV receiver for LEAP-S1 and the classic Cast receiver otherwise |
+| `YOUTUBE_RECEIVER_APP_ID` | `233637DE` | Override the public YouTube Cast receiver app ID |
 
 Device discovery runs continuously for the lifetime of the service. Expired registry entries are removed lazily when the registry is queried; there is no background cleanup worker.
 
@@ -181,7 +181,7 @@ curl -X POST \
   -d '{"url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ"}'
 ```
 
-The YouTube integration reuses an existing YouTube session when possible. Otherwise it launches the receiver, obtains a `screenId` through `urn:x-cast:com.google.youtube.mdx`, binds a YouTube Lounge session, and sends `setPlaylist(videoId)`. It uses the native Android TV YouTube receiver `2C6A6E3D` for LEAP-S1 devices so playback inherits the account signed in on the box. Other models use the classic Cast receiver `233637DE` by default. Set `YOUTUBE_RECEIVER_APP_ID` to override this selection.
+The YouTube integration reuses an existing YouTube session when possible. Otherwise it launches the public YouTube Cast receiver `233637DE`, obtains a `screenId` through `urn:x-cast:com.google.youtube.mdx`, binds a YouTube Lounge session, and sends `setPlaylist(videoId)`. For LEAP-S1 devices the launch request is marked as Android-receiver-compatible so Android TV can route it to the native YouTube receiver `2C6A6E3D` and preserve the account signed in on the box. Set `YOUTUBE_RECEIVER_APP_ID` only to override the public Cast receiver ID.
 
 If an existing YouTube receiver session does not return a `screenId`, the service treats it as unresponsive, stops that receiver session, launches a fresh one, and retries the MDX handshake automatically.
 

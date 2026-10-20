@@ -71,8 +71,8 @@ func (m *Manager) Connect(ctx context.Context, id string) (Connected, error) {
 		"address", address,
 		"port", device.Entry.Port,
 	)
-	receiverID := youtubeReceiverAppID(device.Entry.Device, m.youtubeReceiverID)
-	client, _, err := Dial(ctx, address, device.Entry.Port, m.castTimeout, receiverID, m.logger)
+	receiverID, androidReceiverCompatible := youtubeLaunchOptions(device.Entry.Device, m.youtubeReceiverID)
+	client, _, err := Dial(ctx, address, device.Entry.Port, m.castTimeout, receiverID, androidReceiverCompatible, m.logger)
 	if err != nil {
 		m.logger.Warn("failed to connect to Cast device",
 			"uuid", device.Entry.UUID,
@@ -90,6 +90,7 @@ func (m *Manager) Connect(ctx context.Context, id string) (Connected, error) {
 		"address", address,
 		"port", device.Entry.Port,
 		"youtubeReceiverAppId", receiverID,
+		"androidReceiverCompatible", androidReceiverCompatible,
 	)
 	return Connected{Device: device.View()}, nil
 }
