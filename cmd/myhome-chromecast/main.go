@@ -35,7 +35,7 @@ func main() {
 	}
 
 	youtubeClient := youtube.NewClient(cfg.YouTubeTimeout)
-	connections := castclient.NewManager(registry, youtubeClient, cfg.CastTimeout, logger)
+	connections := castclient.NewManager(registry, youtubeClient, cfg.CastTimeout, cfg.YouTubeReceiverID, logger)
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           httpapi.NewHandler(registry, connections, logger),

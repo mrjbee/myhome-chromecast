@@ -109,6 +109,7 @@ Configuration is provided through environment variables:
 | `DEVICE_TTL` | `3h` | Time a device remains available after its last mDNS announcement |
 | `CAST_TIMEOUT` | `5s` | Timeout for a request to a Cast device |
 | `YOUTUBE_TIMEOUT` | `15s` | Timeout for a YouTube Lounge HTTP request |
+| `YOUTUBE_RECEIVER_APP_ID` | empty | Override the YouTube receiver app ID; empty automatically uses the native Android TV receiver for LEAP-S1 and the classic Cast receiver otherwise |
 
 Device discovery runs continuously for the lifetime of the service. Expired registry entries are removed lazily when the registry is queried; there is no background cleanup worker.
 
@@ -180,7 +181,7 @@ curl -X POST \
   -d '{"url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ"}'
 ```
 
-The YouTube integration reuses an existing YouTube Cast session when possible. Otherwise it launches receiver `233637DE`, obtains a `screenId` through `urn:x-cast:com.google.youtube.mdx`, binds a YouTube Lounge session, and sends `setPlaylist(videoId)`.
+The YouTube integration reuses an existing YouTube session when possible. Otherwise it launches the receiver, obtains a `screenId` through `urn:x-cast:com.google.youtube.mdx`, binds a YouTube Lounge session, and sends `setPlaylist(videoId)`. It uses the native Android TV YouTube receiver `2C6A6E3D` for LEAP-S1 devices so playback inherits the account signed in on the box. Other models use the classic Cast receiver `233637DE` by default. Set `YOUTUBE_RECEIVER_APP_ID` to override this selection.
 
 If an existing YouTube receiver session does not return a `screenId`, the service treats it as unresponsive, stops that receiver session, launches a fresh one, and retries the MDX handshake automatically.
 

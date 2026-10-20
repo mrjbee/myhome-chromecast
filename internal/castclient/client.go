@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,16 +16,17 @@ import (
 )
 
 const (
-	defaultSender      = "sender-0"
-	defaultReceiver    = "receiver-0"
-	connectionNS       = "urn:x-cast:com.google.cast.tp.connection"
-	receiverNS         = "urn:x-cast:com.google.cast.receiver"
-	mediaNS            = "urn:x-cast:com.google.cast.media"
-	youtubeNS          = "urn:x-cast:com.google.youtube.mdx"
-	youtubeReceiverID  = "233637DE"
-	youtubeLaunchDelay = 20 * time.Second
-	youtubeStopDelay   = 10 * time.Second
-	youtubeMDXRetry    = time.Second
+	defaultSender              = "sender-0"
+	defaultReceiver            = "receiver-0"
+	connectionNS               = "urn:x-cast:com.google.cast.tp.connection"
+	receiverNS                 = "urn:x-cast:com.google.cast.receiver"
+	mediaNS                    = "urn:x-cast:com.google.cast.media"
+	youtubeNS                  = "urn:x-cast:com.google.youtube.mdx"
+	youtubeCastReceiverID      = "233637DE"
+	youtubeAndroidTVReceiverID = "2C6A6E3D"
+	youtubeLaunchDelay         = 20 * time.Second
+	youtubeStopDelay           = 10 * time.Second
+	youtubeMDXRetry            = time.Second
 )
 
 type mdxRequest struct {
@@ -51,10 +53,11 @@ type screenStatus struct {
 }
 
 type Client struct {
-	conn    *cast.Connection
-	timeout time.Duration
-	logger  *slog.Logger
-	nextID  atomic.Int64
+	conn              *cast.Connection
+	timeout           time.Duration
+	youtubeReceiverID string
+	logger            *slog.Logger
+	nextID            atomic.Int64
 
 	waitMu  sync.Mutex
 	waiters map[int]chan *pb.CastMessage
@@ -63,14 +66,15 @@ type Client struct {
 	close   sync.Once
 }
 
-func Dial(ctx context.Context, address string, port int, timeout time.Duration, logger *slog.Logger) (*Client, cast.ReceiverStatusResponse, error) {
+func Dial(ctx context.Context, address string, port int, timeout time.Duration, youtubeReceiverID string, logger *slog.Logger) (*Client, cast.ReceiverStatusResponse, error) {
 	client := &Client{
-		conn:    cast.NewConnection(),
-		timeout: timeout,
-		logger:  logger,
-		waiters: make(map[int]chan *pb.CastMessage),
-		done:    make(chan struct{}),
-		screens: make(chan screenStatus, 8),
+		conn:              cast.NewConnection(),
+		timeout:           timeout,
+		youtubeReceiverID: youtubeReceiverID,
+		logger:            logger,
+		waiters:           make(map[int]chan *pb.CastMessage),
+		done:              make(chan struct{}),
+		screens:           make(chan screenStatus, 8),
 	}
 	client.nextID.Store(time.Now().UnixNano() % 1_000_000_000)
 	if err := client.conn.Start(address, port); err != nil {
@@ -247,7 +251,7 @@ func (c *Client) YouTubeScreenID(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if app, ok := youtubeApplication(status); ok {
+	if app, ok := youtubeApplication(status, c.youtubeReceiverID); ok {
 		c.logger.Info("reusing existing YouTube receiver session",
 			"sessionId", app.SessionId,
 			"transportId", app.TransportId,
@@ -341,7 +345,7 @@ func (c *Client) stopYouTubeReceiver(ctx context.Context, app cast.Application) 
 	for {
 		status, err := c.ReceiverStatus(stopCtx)
 		if err == nil {
-			if _, running := youtubeApplication(status); !running {
+			if _, running := youtubeApplication(status, c.youtubeReceiverID); !running {
 				c.logger.Info("stopped unresponsive YouTube receiver session", "sessionId", app.SessionId)
 				return nil
 			}
@@ -357,10 +361,10 @@ func (c *Client) stopYouTubeReceiver(ctx context.Context, app cast.Application) 
 func (c *Client) launchYouTubeReceiver(ctx context.Context) (cast.Application, error) {
 	launchCtx, cancel := context.WithTimeout(ctx, youtubeLaunchDelay)
 	defer cancel()
-	c.logger.Info("launching YouTube receiver", "appId", youtubeReceiverID)
+	c.logger.Info("launching YouTube receiver", "appId", c.youtubeReceiverID)
 	if err := c.send(&cast.LaunchRequest{
 		PayloadHeader: cast.PayloadHeader{Type: "LAUNCH"},
-		AppId:         youtubeReceiverID,
+		AppId:         c.youtubeReceiverID,
 	}, defaultReceiver, receiverNS); err != nil {
 		return cast.Application{}, fmt.Errorf("launch YouTube receiver: %w", err)
 	}
@@ -368,7 +372,7 @@ func (c *Client) launchYouTubeReceiver(ctx context.Context) (cast.Application, e
 	for {
 		status, err := c.ReceiverStatus(launchCtx)
 		if err == nil {
-			if app, running := youtubeApplication(status); running {
+			if app, running := youtubeApplication(status, c.youtubeReceiverID); running {
 				c.logger.Info("YouTube receiver launched",
 					"sessionId", app.SessionId,
 					"transportId", app.TransportId,
@@ -384,13 +388,25 @@ func (c *Client) launchYouTubeReceiver(ctx context.Context) (cast.Application, e
 	}
 }
 
-func youtubeApplication(status cast.ReceiverStatusResponse) (cast.Application, bool) {
+func youtubeApplication(status cast.ReceiverStatusResponse, receiverID string) (cast.Application, bool) {
 	for _, app := range status.Status.Applications {
-		if app.AppId == youtubeReceiverID && app.TransportId != "" {
+		if app.AppId == receiverID && app.TransportId != "" {
 			return app, true
 		}
 	}
 	return cast.Application{}, false
+}
+
+func youtubeReceiverAppID(model, configured string) string {
+	if configured != "" {
+		return configured
+	}
+
+	normalizedModel := strings.ToUpper(strings.TrimSpace(model))
+	if strings.Contains(normalizedModel, "LEAP-S1") || strings.Contains(normalizedModel, "LEAP S1") {
+		return youtubeAndroidTVReceiverID
+	}
+	return youtubeCastReceiverID
 }
 
 func activeApplication(status cast.ReceiverStatusResponse) (cast.Application, error) {

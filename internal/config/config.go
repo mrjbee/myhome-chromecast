@@ -12,6 +12,7 @@ type Config struct {
 	DeviceTTL          time.Duration
 	CastTimeout        time.Duration
 	YouTubeTimeout     time.Duration
+	YouTubeReceiverID  string
 }
 
 func Load() (Config, error) {
@@ -21,6 +22,7 @@ func Load() (Config, error) {
 		DeviceTTL:          3 * time.Hour,
 		CastTimeout:        5 * time.Second,
 		YouTubeTimeout:     15 * time.Second,
+		YouTubeReceiverID:  os.Getenv("YOUTUBE_RECEIVER_APP_ID"),
 	}
 
 	var err error

@@ -29,16 +29,20 @@ type activeConnection struct {
 }
 
 type Manager struct {
-	mu          sync.Mutex
-	registry    *discovery.Registry
-	youtube     *youtube.Client
-	castTimeout time.Duration
-	logger      *slog.Logger
-	active      *activeConnection
+	mu                sync.Mutex
+	registry          *discovery.Registry
+	youtube           *youtube.Client
+	castTimeout       time.Duration
+	youtubeReceiverID string
+	logger            *slog.Logger
+	active            *activeConnection
 }
 
-func NewManager(registry *discovery.Registry, youtubeClient *youtube.Client, castTimeout time.Duration, logger *slog.Logger) *Manager {
-	return &Manager{registry: registry, youtube: youtubeClient, castTimeout: castTimeout, logger: logger}
+func NewManager(registry *discovery.Registry, youtubeClient *youtube.Client, castTimeout time.Duration, youtubeReceiverID string, logger *slog.Logger) *Manager {
+	return &Manager{
+		registry: registry, youtube: youtubeClient, castTimeout: castTimeout,
+		youtubeReceiverID: youtubeReceiverID, logger: logger,
+	}
 }
 
 func (m *Manager) Connect(ctx context.Context, id string) (Connected, error) {
@@ -67,7 +71,8 @@ func (m *Manager) Connect(ctx context.Context, id string) (Connected, error) {
 		"address", address,
 		"port", device.Entry.Port,
 	)
-	client, _, err := Dial(ctx, address, device.Entry.Port, m.castTimeout, m.logger)
+	receiverID := youtubeReceiverAppID(device.Entry.Device, m.youtubeReceiverID)
+	client, _, err := Dial(ctx, address, device.Entry.Port, m.castTimeout, receiverID, m.logger)
 	if err != nil {
 		m.logger.Warn("failed to connect to Cast device",
 			"uuid", device.Entry.UUID,
@@ -84,6 +89,7 @@ func (m *Manager) Connect(ctx context.Context, id string) (Connected, error) {
 		"name", device.Entry.DeviceName,
 		"address", address,
 		"port", device.Entry.Port,
+		"youtubeReceiverAppId", receiverID,
 	)
 	return Connected{Device: device.View()}, nil
 }
